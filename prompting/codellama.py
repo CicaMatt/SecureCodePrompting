@@ -12,6 +12,5 @@ def send_prompt_codellama(prompt):
 
     return response['message']['content']
 
-
 # prompt = ''''''
 # print(send_prompt_codellama(prompt))
