@@ -1,22 +1,24 @@
+import ast
 import csv
 import os
 import re
+import subprocess
+
+import javalang
 
 from prompting.codellama import send_prompt_codellama
 from prompting.gemini import send_prompt_gemini
 from prompting.gpt import send_prompt_gpt
 
-question_id = "123"
+
+csv_path = "/Users/matteocicalese/Downloads/infos.csv"
 
 question_files = "/Users/matteocicalese/Library/CloudStorage/OneDrive-Personale/Paper/Paper Data/Problem Descriptions"
 languages_files = "/Users/matteocicalese/Library/CloudStorage/OneDrive-Personale/Paper/Paper Data/Problem Languages"
 
-csv_path = "/Users/matteocicalese/Downloads/infos.csv"
 secure_prompt_patterns_path = "/Users/matteocicalese/Library/CloudStorage/OneDrive-Personale/Paper/Paper Data/Secure prompt patterns (PC)"
 to_validate_path = "/Users/matteocicalese/Library/CloudStorage/OneDrive-Personale/Paper/Paper Data/To Validate"
-secure_prompt_patterns_filled_path = "/Users/matteocicalese/Library/CloudStorage/OneDrive-Personale/Paper/Paper Data/Secure prompt patterns (Filled)"
 full_answers_path = "/Users/matteocicalese/Library/CloudStorage/OneDrive-Personale/Paper/Paper Data/Full Answers"
-
 validation_path = "/Users/matteocicalese/Library/CloudStorage/OneDrive-Personale/Paper/Paper Data/Validation"
 
 
@@ -66,6 +68,27 @@ def create_languages_files(output_folder, csv_file):
             with open(txt_file_path, 'w', encoding='utf-8') as txt_file:
                 txt_file.write(language)
             print(f"Created {txt_file_path}")
+
+
+def create_question_folders(source_dir, target_dir):
+    if not os.path.exists(source_dir):
+        print(f"Source directory '{source_dir}' does not exist.")
+        return
+
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir)
+
+    for file_name in os.listdir(source_dir):
+        file_path = os.path.join(source_dir, file_name)
+        if os.path.isfile(file_path):
+            dir_name = os.path.splitext(file_name)[0]  # Remove file extension
+            new_dir_path = os.path.join(target_dir, dir_name)
+
+            if not os.path.exists(new_dir_path):
+                os.makedirs(new_dir_path)
+                print(f"Created directory: {new_dir_path}")
+            else:
+                print(f"Directory already exists: {new_dir_path}")
 
 
 def replace_question_placeholder(text, question_text, placeholder ="[Problem Statement]"):
@@ -198,11 +221,12 @@ def extract_code_from_llm_response(file_path):
     """
     Extracts the source code from an LLM response stored in a file.
 
-    The function looks for code blocks delimited by either triple backticks (```)
-    or triple single quotes ('''), optionally with a language marker (e.g., java, python, php)
-    on the opening delimiter. If one or more code blocks are found, the contents inside them
-    are concatenated and returned. Otherwise, the entire file content is assumed to be code
-    and is returned unchanged.
+    The function looks for code blocks delimited by either:
+      - Triple backticks (```) or triple single quotes ('''), optionally with a language marker
+      - [PYTHON] and [/PYTHON]
+
+    If one or more code blocks are found, the contents inside them are concatenated and returned.
+    Otherwise, the entire file content is assumed to be code and is returned unchanged.
 
     Parameters:
         file_path (str): Path to the file containing the LLM response.
@@ -216,30 +240,45 @@ def extract_code_from_llm_response(file_path):
     except IOError as e:
         raise RuntimeError(f"Could not read file {file_path}: {e}")
 
-    # Regular expression to capture code blocks delimited by either ``` or '''
-    # The regex breakdown:
-    #   (?P<delimiter>```|''')  -> Matches and names the opening delimiter as "delimiter"
-    #   (?:\s*(\w+))?           -> Optionally matches a language identifier (e.g., java, python, php)
-    #   \s*\n                  -> Matches any whitespace and a newline right after the opening delimiter
-    #   (.*?)                  -> Lazily captures everything until the closing delimiter (the code)
-    #   \n?(?P=delimiter)      -> Optionally matches a newline before the closing delimiter, which must match the opening one
+    # This regex has two alternatives:
+    # 1. Matches code blocks delimited by triple backticks (```) or triple single quotes ('''),
+    #    optionally followed by a language identifier.
+    # 2. Matches code blocks delimited by [PYTHON] and [/PYTHON].
+    #
+    # The regex uses named groups "code1" for the first alternative and "code2" for the second.
     pattern = re.compile(
-        r"(?P<delimiter>```|''')"   # Opening delimiter (either ``` or ''')
-        r"(?:\s*(\w+))?"            # Optional language identifier (captured in group 2)
-        r"\s*\n"                   # Optional whitespace and newline after the opening delimiter
-        r"(.*?)"                   # Lazily capture the code (captured in group 3)
-        r"\n?(?P=delimiter)",      # Optional newline then the same delimiter as the opening one
-        re.DOTALL                  # DOTALL to ensure newlines are included in the match
+        r"""
+        (?:  # first alternative: triple backticks or triple single quotes
+            (?P<backtick>```|''')
+            (?:\s*(\w+))?        # optional language identifier (e.g., python, java, etc.)
+            \s*\n
+            (?P<code1>.*?)
+            \n?(?P=backtick)
+        )
+        |
+        (?:  # second alternative: [PYTHON] ... [/PYTHON]
+            \[PYTHON\]\s*\n?
+            (?P<code2>.*?)
+            \n?\[/PYTHON\]
+        )
+        """,
+        re.DOTALL | re.VERBOSE
     )
 
-    matches = pattern.findall(content)
-    if matches:
-        # Each match is a tuple: (delimiter, language (if any), code)
-        # We only need the code portion.
-        code_blocks = [match[2].rstrip() for match in matches]
+    code_blocks = []
+    # Using finditer to preserve the order in which code blocks appear.
+    for match in pattern.finditer(content):
+        # Depending on which alternative matched, one of these groups will be non-None.
+        if match.group('code1') is not None:
+            code_blocks.append(match.group('code1').rstrip())
+        elif match.group('code2') is not None:
+            code_blocks.append(match.group('code2').rstrip())
+
+    if code_blocks:
         return "\n".join(code_blocks).strip()
     else:
         # No code block delimiters found; assume the entire content is code.
+        print(f"{file_path}: No code blocks found")
         return content.strip()
 
 
@@ -346,6 +385,65 @@ def is_code_matching_language(file_path):
             print(f"Mismatch: '{file_path}' does not appear to be valid PHP code.")
 
 
+def is_code_matching_language_parser(file_path):
+    """
+    Checks if the code in a file is syntactically valid for its expected language.
+
+    Supported languages: Python (.py), Java (.java), PHP (.php)
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+
+    if ext == '.py':
+        expected_language = 'python'
+    elif ext == '.java':
+        expected_language = 'java'
+    elif ext == '.php':
+        expected_language = 'php'
+    else:
+        print(f"Unsupported file extension: {ext}")
+        return
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            code = f.read()
+    except Exception as e:
+        print(f"Error reading file '{file_path}': {e}")
+        return
+
+    if expected_language == 'python':
+        try:
+            ast.parse(code)
+            # print("Valid Python code.")
+        except SyntaxError as e:
+            print(f"Mismatch: '{file_path}' does not appear to be valid Python code. {e}")
+
+    elif expected_language == 'java':
+        try:
+            javalang.parse.parse(code)
+            # print("Valid Java code.")
+        except javalang.parser.JavaSyntaxError as e:
+            print(f"Mismatch: '{file_path}' does not appear to be valid Java code. {e}")
+        except Exception as e:
+            print(f"An error occurred while parsing Java code: {e}")
+
+    elif expected_language == 'php':
+        try:
+            result = subprocess.run(
+                ['php', '-l', file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            # if result.returncode == 0:
+                # print("Valid PHP code.")
+            # else:
+            print(f"Mismatch: '{file_path}' does not appear to be valid PHP code. {result.stderr.strip()}")
+        except FileNotFoundError:
+            print("PHP is not installed or not found in your PATH.")
+        except Exception as e:
+            print(f"An error occurred while checking PHP code: {e}")
+
+
 def check_snippets_adherence(path):
     for language in os.listdir(path):
         language_path = os.path.join(path, language)
@@ -371,12 +469,17 @@ def check_snippets_adherence(path):
                         continue
 
                     is_code_matching_language(file_path)
+                    # is_code_matching_language_parser(file_path)
 
 
 
-
+# create_questions_files(languages_files, csv_path)
 # create_languages_files(languages_files, csv_path)
 
+# match_question_to_template(to_validate_path, question_files, languages_files)
+
 # process_prompts(to_validate_path, full_answers_path)
+# response_to_code(full_answers_path, validation_path)
 # check_snippets_adherence(validation_path)
-match_question_to_template(to_validate_path, question_files, languages_files)
+
+
