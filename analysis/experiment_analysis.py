@@ -1,5 +1,7 @@
 from collections import Counter
 import pandas as pd
+from scipy.stats import shapiro
+
 
 def calculate_ratios_per_question(file_path, output_path):
     # Load the original dataset
@@ -7,7 +9,7 @@ def calculate_ratios_per_question(file_path, output_path):
 
     # List of LLMs and prompts
     llms = ['gpt', 'gemini', 'codellama']
-    prompts = ['s', 'm', 'h']
+    prompts = ['b', 's']
 
     # Empty DataFrame to contain only the new columns
     new_columns_df = pd.DataFrame()
@@ -47,6 +49,24 @@ def calculate_mean(input_file, output_file):
 
     # Save the DataFrame of means to a new CSV file
     df_mean.to_csv(output_file)
+
+
+def calculate_improvement(val_b, val_s):
+    return ((val_b - val_s) / val_b) * 100 if val_b != 0 else 0
+
+
+def print_improvements(file_path):
+    df = pd.read_csv(file_path).set_index("Unnamed: 0")["Mean"]
+
+    # Identificare e confrontare le coppie
+    gpt_improvement = calculate_improvement(df.get("gpt_cwe_loc_b", 0), df.get("gpt_cwe_loc_s", 0))
+    print(f"GPT Improvement: {gpt_improvement:.2f}%")
+
+    gemini_improvement = calculate_improvement(df.get("gemini_cwe_loc_b", 0), df.get("gemini_cwe_loc_s", 0))
+    print(f"Gemini Improvement: {gemini_improvement:.2f}%")
+
+    codellama_improvement = calculate_improvement(df.get("codellama_cwe_loc_b", 0), df.get("codellama_cwe_loc_s", 0))
+    print(f"CodeLlama Improvement: {codellama_improvement:.2f}%")
 
 
 def count_all_cwe_ids(file_path):
@@ -122,4 +142,41 @@ def most_frequent_cwe(file_path, considered_columns):
     print("Top 5 CWE:", ", ".join(top_5_cwe))
 
 
-# TODO: Statistical tests
+def check_normality_per_column(file_path):
+    try:
+        # Load the CSV file into a DataFrame
+        dataframe = pd.read_csv(file_path)
+
+        # Filter columns that contain 'cwe_count', 'cq', or 'loc' in the name
+        considered_columns = [col for col in dataframe.columns if
+                               any(keyword in col for keyword in ['cwe_count', 'cwe_loc', 'loc'])]
+
+        result = {}
+
+        # For each column, perform the Shapiro-Wilk test
+        for column in considered_columns:
+            try:
+                # Convert the column to numeric values, replacing non-convertible values with NaN
+                dataframe[column] = pd.to_numeric(dataframe[column], errors='coerce')
+
+                # Perform the test only if there are at least 3 numeric values
+                if dataframe[column].count() >= 3:
+                    stat, p_value = shapiro(dataframe[column].dropna())
+                    # Check if the p-value is greater than 0.05
+                    result[column] = 'Normal' if p_value > 0.05 else 'Non normal'
+                else:
+                    result[column] = 'Unable to process'
+            except Exception as e:
+                result[column] = f"Processing error: {e}"
+
+        print(result)
+    except FileNotFoundError:
+        return "Error: file not found."
+    except pd.errors.EmptyDataError:
+        return "Error: empty file or unvalid data."
+    except Exception as e:
+        return f"Error: {e}"
+
+
+
+# TODO: Statistical significant difference test
